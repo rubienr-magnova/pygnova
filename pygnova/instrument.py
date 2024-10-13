@@ -1,3 +1,7 @@
+import urllib.error
+import urllib.request
+from typing import Any, Dict
+
 import pyvisa_py as _pyvisa_py
 from pyvisa import Resource, ResourceManager  # noqa
 from pyvisa import constants
@@ -5,7 +9,7 @@ from pyvisa import constants
 pyvisa_py = _pyvisa_py
 
 
-class Instrument:
+class VisaInstrument:
 
     def __init__(self,
                  instrument_url: str,
@@ -36,7 +40,7 @@ class Instrument:
 
     def __exit__(self, exc_type, exc_val, exc_tb):
         if self.instrument is not None:
-            print(f"closing device {self.instrument_url}")
+            print(f"closing device={self.instrument_url}")
             self.instrument.close()
             self.instrument = None
         return False
@@ -52,8 +56,30 @@ class Instrument:
         :return:
         """
         cmd = f"{command}?"
-        print(f"-> write={self.instrument.write(cmd)} command=\"{cmd}\"")
-        print(f"<- recv=\"{self.instrument.read()}\"")
+        print(f"-> write={self.instrument.write(cmd)} command=\"{cmd}\"")  # noqa
+        print(f"<- recv=\"{self.instrument.read()}\"")  # noqa
 
     def write(self, command: str):
-        print(f"-> write={self.instrument.write(command)} command=\"{command}\"")
+        print(f"-> write={self.instrument.write(command)} command=\"{command}\"")  # noqa
+
+
+class RestInstrument:
+    def __init__(self, address: str, port: int, path: str, headers: Dict[str, str] | None = None):
+        self.source_url = f"http://{address}:{port}/{path}"
+        headers = {"Accept": "text/html"} if headers is None else headers
+        self.request: urllib.request.Request = urllib.request.Request(self.source_url, headers=headers)
+        self.open_context_manager: Any | None = None
+
+    def __enter__(self):
+        if self.open_context_manager is None:
+            self.open_context_manager = urllib.request.urlopen(self.request)
+        else:
+            print(f"warning: device is already opened={self.source_url}")
+        return self.open_context_manager
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        if self.open_context_manager is not None:
+            print(f"closing device={self.source_url}")
+            self.open_context_manager.close()
+            self.open_context_manager = None
+        return False

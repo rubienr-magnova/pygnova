@@ -20,6 +20,7 @@ Note: ensure user belongs to group "users"
 """
 
 import os
+import urllib.error
 import urllib.parse
 import urllib.request
 
@@ -27,7 +28,7 @@ import pyvisa_py as _pyvisa_py
 from pyvisa import Resource  # noqa
 
 from pygnova.cli_args import CliArgs
-from pygnova.instrument import Instrument
+from pygnova.instrument import VisaInstrument, RestInstrument
 from pygnova.known_commands import (
     load_commands_tree_from_file,
     nested_json_from_delimited_items,
@@ -50,17 +51,18 @@ def interpret_device_args(arg_parser: CliArgs) -> int:
     print(f"device: {args.url}")
     command = args.read if args.read else args.write
 
-    # sanity check
-
     if not args.nocheck:
-        commands_file = arg_parser.get_commandsfile_path()
-        commands_tree = load_commands_tree_from_file(commands_file)
-        if not is_known_command(command, commands_tree):
-            print(f"error: no such {command=}")
+        try:
+            commands_tree = load_commands_tree_from_file(arg_parser.get_commandsfile_path())
+            if not is_known_command(command, commands_tree):
+                print(f"error: no such {command=}")
+                return -1
+        except FileNotFoundError as e:
+            print(f"error: {e}")
             return -1
 
     try:
-        with Instrument(args.url) as instrument:
+        with VisaInstrument(args.url) as instrument:
             cmd = command_from_cmd_with_args(command)
             if args.read:
                 if cmd != command:
@@ -73,21 +75,31 @@ def interpret_device_args(arg_parser: CliArgs) -> int:
     except ValueError as e:
         print(f"error: {e}")
         return -1
+    except Exception as e:
+        print(f"error: {e}")
+        return -1
+
     return 0
 
 
 def interpret_rest_args(arg_parser: CliArgs) -> int:
     args = arg_parser.args
-    source_url = f"http://{args.address}:{args.port}/{args.dir}"
-    request = urllib.request.Request(source_url, headers={"Accept": "text/html"})
 
-    with urllib.request.urlopen(request) as data:
-        tree = nested_json_from_delimited_items(data.read())
-        print_nested_json_tree(tree)
-        if hasattr(args, "commandsfile"):
-            commands_file = arg_parser.get_commandsfile_path()
-            print(f"storing {source_url} -> {commands_file} ...")
-            store_commands_tree_to_file(commands_file, tree)
+    if not args.fetchfromdevice:
+        arg_parser.rest_parser.print_help()
+        return -1
+
+    try:
+        with RestInstrument(args.address, args.port, args.dir) as data:
+            tree = nested_json_from_delimited_items(data.read())
+            print_nested_json_tree(tree)
+            if hasattr(args, "commandsfile"):
+                commands_file = arg_parser.get_commandsfile_path()
+                print(f"storing {data.source_url} -> {commands_file} ...")
+                store_commands_tree_to_file(commands_file, tree)
+    except urllib.error.HTTPError as e:
+        print(f"error: {e}")
+        return -1
 
     return 0
 
@@ -103,7 +115,7 @@ def interpret_commands_args(arg_parser: CliArgs) -> int:
         print_nested_json_tree(tree)
         return 0
     else:
-        arg_parser.parser.print_help()
+        arg_parser.commands_parser.print_help()
         return -1
 
 
@@ -117,11 +129,11 @@ def main() -> int:
         ("commands", interpret_commands_args),
     ]
 
-    if cli_args.command not in [cmd for cmd, _func in known_commands]:
+    if cli_args.command not in [cmd for cmd, _impl in known_commands]:
         arg_parser.parser.print_help()
         return -1
 
-    return [implementation(arg_parser) for name, implementation in known_commands if name == cli_args.command][0]
+    return [impl(arg_parser) for name, impl in known_commands if name == cli_args.command][0]
 
 
 if __name__ == "__main__":
