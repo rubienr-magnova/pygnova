@@ -3,12 +3,14 @@ import pickle
 import re
 from typing import Dict
 
+CommandsDict = Dict[str, "CommandsDict"]
 
-def to_nested_json_from_delimited_items(items: str):
-    tree = {}
+
+def nested_json_from_delimited_items(items: str, delimiter=":") -> CommandsDict:
+    tree: CommandsDict = {}
     for item in json.loads(items):
         t = tree
-        for part in item.split(':'):
+        for part in item.split(delimiter):
             t = t.setdefault(part, {})
     return tree
 
@@ -23,14 +25,14 @@ def print_nested_json_tree(tree, level=0):
         print_nested_json_tree(value, level + 1)
 
 
-def load_commands_from_file(file_path_name: str) -> Dict:
+def load_commands_tree_from_file(file_path_name: str) -> Dict:
     with open(file_path_name, 'rb') as in_file:
         print(f"loading commands from {file_path_name} ...")
         tree = pickle.load(in_file)
         return tree
 
 
-def store_to_file(file_path_name: str, tree: Dict):
+def store_commands_tree_to_file(file_path_name: str, tree: Dict):
     with open(file_path_name, 'wb') as out_file:
         pickle.dump(tree, out_file)
         print(f"stored scpi-def to {out_file.name}")
