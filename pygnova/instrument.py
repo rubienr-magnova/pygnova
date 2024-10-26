@@ -1,23 +1,49 @@
-import urllib.error
-import urllib.request
-from typing import Any, Dict
+import abc
+from typing import Dict, Union
 
 import pyvisa_py as _pyvisa_py
+import requests
 from pyvisa import Resource, ResourceManager  # noqa
 from pyvisa import constants
+
+from pygnova.instrument_url import VisaUsbUrl, VisaTcpUrl, RestUrl, url_from_str
 
 pyvisa_py = _pyvisa_py
 
 
-class VisaInstrument:
+class ScpiReadWrite(metaclass=abc.ABCMeta):
+
+    @abc.abstractmethod
+    def read(self, command: str) -> str | Dict:
+        """
+        The trailing '?' is appended automatically and shall be omitted in the command string.
+
+        Command examples:
+        - read identification: "*IDN"
+        - read CH1 scale:      "CHANnel1:SCALe" or "chan1:scal"
+        """
+        raise NotImplementedError
+
+    @abc.abstractmethod
+    def write(self, command: str) -> int | Dict:
+        """
+        Optional space-separated arguments may be contained in the command string.
+
+        Command examples:
+        - write CH1 scale to 500mV: "CHANnel1:SCALe 0.5" or "chan1:scal 500m"
+        """
+        raise NotImplementedError
+
+
+class VisaInstrument(ScpiReadWrite):
 
     def __init__(self,
-                 instrument_url: str,
+                 url: Union[VisaTcpUrl, VisaUsbUrl],
                  write_termination: str = "\n",
                  read_termination: str = "\n",
                  rw_timeout: int = 1000,
                  resource_manager_class: str | None = "@py"):
-        self.instrument_url: str | None = instrument_url
+        self.instrument_url: str = url.to_str_url()
         self.resource_manager: ResourceManager = ResourceManager(resource_manager_class if resource_manager_class is not None else "")
         self.instrument: Resource | None = None
         self.write_termination: str = write_termination
@@ -45,41 +71,47 @@ class VisaInstrument:
             self.instrument = None
         return False
 
-    def read(self, command: str):
-        """
-        examples:
-        - "*IDN"
-        - "MEASurement:VPPReshoot:REMove"
-        - "DIGItal1:STATe"
-
-        :param command:
-        :return:
-        """
+    def read(self, command: str) -> str:
         cmd = f"{command}?"
         print(f"-> write={self.instrument.write(cmd)} command=\"{cmd}\"")  # noqa
-        print(f"<- recv=\"{self.instrument.read()}\"")  # noqa
+        response = self.instrument.read()  # noqa
+        print(f"<- recv=\"{response}\"")
+        return response
 
-    def write(self, command: str):
-        print(f"-> write={self.instrument.write(command)} command=\"{command}\"")  # noqa
+    def write(self, command: str) -> int:
+        response = self.instrument.write(command)  # noqa
+        print(f"-> write={response} command=\"{command}\"")  # noqa
+        return response
 
 
-class RestInstrument:
-    def __init__(self, address: str, port: int, path: str, headers: Dict[str, str] | None = None):
-        self.source_url = f"http://{address}:{port}/{path}"
-        headers = {"Accept": "text/html"} if headers is None else headers
-        self.request: urllib.request.Request = urllib.request.Request(self.source_url, headers=headers)
-        self.open_context_manager: Any | None = None
+class RestInstrument(ScpiReadWrite):
+
+    def __init__(self, instrument_url: RestUrl):
+        self.instrument_url = instrument_url.to_str_url()
 
     def __enter__(self):
-        if self.open_context_manager is None:
-            self.open_context_manager = urllib.request.urlopen(self.request)
-        else:
-            print(f"warning: device is already opened={self.source_url}")
-        return self.open_context_manager
+        return self
 
     def __exit__(self, exc_type, exc_val, exc_tb):
-        if self.open_context_manager is not None:
-            print(f"closing device={self.source_url}")
-            self.open_context_manager.close()
-            self.open_context_manager = None
         return False
+
+    def read(self, command: str) -> Dict:
+        print(f"-> write={command}")
+        response = requests.post(self.instrument_url, json=f"{command}?").json()
+        print(f"<- recv={response}")
+        return response
+
+    def write(self, command: str) -> Dict:
+        print(f"-> write={command}")
+        return requests.post(self.instrument_url, json=f"{command}").json()
+
+
+def get_instrument_from_url(url: str) -> RestInstrument | VisaInstrument | None:
+    known_types = {
+        RestUrl: RestInstrument,
+        VisaUsbUrl: VisaInstrument,
+        VisaTcpUrl: VisaInstrument,
+        None: lambda _o: None}
+
+    url_object = url_from_str(url)
+    return known_types[type(url_object)](url_object)

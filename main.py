@@ -20,41 +20,35 @@ Note: ensure user belongs to group "users"
 """
 
 import os
-import urllib.error
-import urllib.parse
-import urllib.request
 
 import pyvisa_py as _pyvisa_py
 from pyvisa import Resource  # noqa
 
 from pygnova.cli_args import CliArgs
-from pygnova.instrument import VisaInstrument, RestInstrument
+from pygnova.instrument import get_instrument_from_url
+from pygnova.instrument_url import url_from_str, RestUrl
 from pygnova.known_commands import (
-    load_commands_tree_from_file,
-    nested_json_from_delimited_items,
-    print_nested_json_tree,
-    store_commands_tree_to_file,
-    is_known_command,
-    command_from_cmd_with_args
+    print_nested_json_tree, KnownCommandsFileReader, strip_args_from_cmd, KnownCommandsRestReader,
 )
 
 pyvisa_py = _pyvisa_py
 
 
-def interpret_device_args(arg_parser: CliArgs) -> int:
+def interpret_device_command(arg_parser: CliArgs) -> int:
     args = arg_parser.args
 
-    if not args.read and not args.write:
+    if not args.get and not args.set:
         arg_parser.device_parser.print_help()
         return -1
 
     print(f"device: {args.url}")
-    command = args.read if args.read else args.write
+    command = args.get if args.get else args.set
 
     if not args.nocheck:
         try:
-            commands_tree = load_commands_tree_from_file(arg_parser.get_commandsfile_path())
-            if not is_known_command(command, commands_tree):
+            cmd_reader = KnownCommandsFileReader(args.datadir, args.commandsfile)
+            cmd_reader.load_commands()
+            if not cmd_reader.is_known_command(command):
                 print(f"error: no such {command=}")
                 return -1
         except FileNotFoundError as e:
@@ -62,13 +56,13 @@ def interpret_device_args(arg_parser: CliArgs) -> int:
             return -1
 
     try:
-        with VisaInstrument(args.url) as instrument:
-            cmd = command_from_cmd_with_args(command)
-            if args.read:
+        with get_instrument_from_url(args.url) as instrument:
+            cmd = strip_args_from_cmd(command)
+            if args.get:
                 if cmd != command:
                     print(f"warning: stripped command from={command} to={cmd} ")
                 instrument.read(cmd)
-            elif args.write:
+            elif args.set:
                 instrument.write(command)
             else:
                 print("error: no command specified")
@@ -82,38 +76,35 @@ def interpret_device_args(arg_parser: CliArgs) -> int:
     return 0
 
 
-def interpret_rest_args(arg_parser: CliArgs) -> int:
+def interpret_commands_command(arg_parser: CliArgs) -> int:
     args = arg_parser.args
 
-    if not args.fetchfromdevice:
-        arg_parser.rest_parser.print_help()
-        return -1
-
-    try:
-        with RestInstrument(args.address, args.port, args.dir) as data:
-            tree = nested_json_from_delimited_items(data.read())
-            print_nested_json_tree(tree)
-            if hasattr(args, "commandsfile"):
-                commands_file = arg_parser.get_commandsfile_path()
-                print(f"storing {data.source_url} -> {commands_file} ...")
-                store_commands_tree_to_file(commands_file, tree)
-    except urllib.error.HTTPError as e:
-        print(f"error: {e}")
-        return -1
-
-    return 0
-
-
-def interpret_commands_args(arg_parser: CliArgs) -> int:
-    args = arg_parser.args
     if args.list:
-        commands_file = arg_parser.get_commandsfile_path()
+        commands_file = arg_parser.get_commands_file_path()
         if not os.path.isfile(commands_file):
             print(f"error: {commands_file} does not exist, fetch with \"rest -o\" first")
             return -1
-        tree = load_commands_tree_from_file(str(commands_file))
-        print_nested_json_tree(tree)
+        cmd_reader = KnownCommandsFileReader(args.datadir, args.commandsfile)
+        cmd_reader.load_commands()
+        print_nested_json_tree(cmd_reader.commands)
         return 0
+
+    elif args.get:
+        url = url_from_str(args.url)
+        if type(url) is not RestUrl:
+            arg_parser.commands_parser.print_help()
+            return -1
+        with KnownCommandsRestReader(url) as cmd_reader:
+            commands_tree = cmd_reader.load_known_commands()
+            if commands_tree is not None:
+                print_nested_json_tree(commands_tree)
+                if hasattr(args, "commandsfile"):
+                    cmd_writer = KnownCommandsFileReader(args.datadir, args.commandsfile)
+                    cmd_writer.commands = commands_tree
+                    print(f"storing {cmd_reader.source_url} -> {cmd_writer.file_path} ...")
+                    cmd_writer.store_commands()
+            else:
+                return -1
     else:
         arg_parser.commands_parser.print_help()
         return -1
@@ -124,9 +115,8 @@ def main() -> int:
     cli_args = arg_parser.parse()
 
     known_commands = [
-        ("device", interpret_device_args),
-        ("rest", interpret_rest_args),
-        ("commands", interpret_commands_args),
+        ("device", interpret_device_command),
+        ("commands", interpret_commands_command),
     ]
 
     if cli_args.command not in [cmd for cmd, _impl in known_commands]:
